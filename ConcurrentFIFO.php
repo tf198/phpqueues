@@ -1,12 +1,12 @@
 <?php
 /**
- * FIFO specifically designed for concurrent access - think IPC,
+ * File-based FIFO specifically designed for concurrent access - think IPC,
  * processing queues etc.  Can do over 18K/s operations depending
  * on disk speed with guaranteed atomicicity.
  *
  * Data is written sequencially to the file and the first item pointer is advanced
  * as items are dequeued.  The file is truncated when all items have been dequeued and
- * compacted when the the wasted space is greater than 8K so the file should remain a
+ * compacted when the the wasted space is greater than 4K so the file should remain a
  * reasonable size as long as the number of dequeues > enqueues over time.
  */
 class ConcurrentFIFO {
