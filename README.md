@@ -5,6 +5,13 @@ processing queues etc.  Can do over 18K/s operations depending
 on disk speed with guaranteed atomicicity.  A single class with no library dependancies,
 the only requirement is a file writable by all processes.
 
+## Status ##
+This should be considered alpha code - there is still more work to be done on recovery
+from data corruption and pushing it to the load limit.  As a simple task queue though it should be
+pretty stable and usable (without any guarantees though!).  Documentation is provided by looking at the 
+[source](https://github.com/tf198/phpqueues/blob/master/ConcurrentFIFO.php) - it is only one file with half 
+a dozen methods :-)
+
 ## Usage ##
 Basic example is a user registration page that wants to send a welcome email to the new user.
 ```php
@@ -48,7 +55,9 @@ while(true) {
 Data is written sequencially to the file and the first item pointer is advanced
 as items are dequeued.  The file is truncated when all items have been dequeued and
 compacted when the the wasted space is greater than 4K so the file should remain a
-reasonable size as long as the number of dequeues > enqueues over time.
+reasonable size as long as the number of dequeues > enqueues over time.  There is a 2 byte
+overhead for each item + a 16 byte header.  Atomicity is provided through flock() and should
+be cross-platform (more testing needed).
 
 ## Performance ##
 
@@ -69,3 +78,6 @@ though the setup is fairly controlled and this could do with some more rigorous 
 * The data structure should be able to recover from crashes during enqueue()/dequeue() but the methods haven't been implemented yet.
 * Provide a lightweight Redis wrapper so this can be used for prototyping.
 * Should be simple to add a basic REST frontend so one machine can act as a messaging server for multiple systems
+* Add magic number to start of datastructure
+* Find the load limit where flock() times out and do something more constructive than die()
+* See if we can use this structure to implement a persistent pub/sub model.
