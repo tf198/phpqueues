@@ -5,7 +5,45 @@ processing queues etc.  Can do over 18K/s operations depending
 on disk speed with guaranteed atomicicity.  A single class with no library dependancies,
 the only requirement is a file writable by all processes.
 
-## Technical details ##
+## Usage ##
+Basic example is a user registration page that wants to send a welcome email to the new user.
+```php
+<?
+require_once "ConcurrentFIFO.php";
+$q = new ConcurrentFIFO('data/test.fifo');
+
+$job = array('email' => 'bob@test.com', 'message' => 'Hello Bob');
+$q->enqueue(json_encode($job)); // the queue only knows about strings
+?>
+```
+
+You can then have a cron job that gets the jobs and processes them every X minutes:
+```php
+<?
+require_once "ConcurrentFIFO.php";
+$q = new ConcurrentFIFO('data/test.fifo');
+
+while($data = $q->dequeue()) {
+	$job = json_decode($data, true); // as array instead of object
+	mail($job['email'], "Your registration", $job['message']);
+}
+```
+
+or daemonise the process - with this you can run as many 'workers' required and the emails
+will be sent as soon as possible:
+```php
+<?
+require_once "ConcurrentFIFO.php";
+$q = new ConcurrentFIFO('data/test.fifo');
+
+while(true) {
+	$data = $q->bdequeue(0); // blocks until an item is available
+	$job = json_decode($data, true);
+	mail($job['email'], "Your registration", $job['message']);
+}
+```
+
+## Implementation ##
 
 Data is written sequencially to the file and the first item pointer is advanced
 as items are dequeued.  The file is truncated when all items have been dequeued and
