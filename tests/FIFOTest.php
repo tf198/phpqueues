@@ -96,4 +96,20 @@ class FIFOTest extends PHPUnit_Framework_TestCase {
 		$this->assertEquals(null, $this->fifo->_read_index());
 	}
 	
+	function testItems() {
+		for($i=0; $i<10; $i++) $this->fifo->enqueue('ITEM_' . $i);
+		$this->assertSame(10, count($this->fifo->items()));
+		
+		$this->assertEquals(array('ITEM_8', 'ITEM_9'), $this->fifo->items(8));
+		$this->assertEquals(array('ITEM_4', 'ITEM_5', 'ITEM_6'), $this->fifo->items(4, 3));
+		
+		$this->assertEquals(array('ITEM_8', 'ITEM_9'), $this->fifo->items(8, 12));
+		$this->assertEquals(array(), $this->fifo->items(23));
+		
+		$this->fifo->clear();
+		$this->assertSame(array(), $this->fifo->items());
+		$this->assertSame(array(), $this->fifo->items(4));
+		$this->assertSame(array(), $this->fifo->items(4, 2));
+	}
+	
 }

@@ -199,6 +199,44 @@ class ConcurrentFIFO {
 		ftruncate($this->fp, 0);
 		flock($this->fp, LOCK_UN);
 	}
+	
+	/**
+	 * Return an array of items from the queue. Does not modify the queue in any way.
+	 * 
+	 * @param int $offset skip $offset items at the start
+	 * @param int $count return up to $count items
+	 * @return multitype:string
+	 */
+	function items($offset=0, $count=0) {
+		flock($this->fp, LOCK_SH) or die('Failed to get lock');
+		
+		$index = $this->_read_index();
+		if(!$index) return array();
+		
+		$result = array();
+		$p = $index['start'];
+		while($p < $index['end']) {
+			$l = $this->_read_int(self::LENGTH_FORMAT, self::LENGTH_SIZE);
+			if(!$l) break;
+			
+			$data = fread($this->fp, $l);
+			$p += $l + self::LENGTH_SIZE;
+			assert($p == ftell($this->fp));
+			
+			if($offset) {
+				$offset--;
+			} else {
+				$result[] = $data;
+				if($count) {
+					$count--;
+					if(!$count) break;
+				}
+			}
+		}
+		
+		flock($this->fp, LOCK_UN);
+		return $result;
+	}
 
 	/**
 	 * Compacts the data file by shifting the unprocessed items to the start of the datafile
