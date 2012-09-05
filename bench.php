@@ -1,6 +1,6 @@
 <?php
 
-define('LOOP', 5000);
+define('LOOP', 10000);
 define('TEST_FIFO', 'test.fifo');
 
 include "ConcurrentFIFO.php";
@@ -21,3 +21,11 @@ for($i=0; $i<LOOP; $i++) {
 }
 $ms = microtime(true) - $start;
 printf("%30s %4d ms [%6d ops/s]\n", 'DEQUEUE', $ms*1000, LOOP / $ms); 
+exit;
+for($i=0; $i<LOOP; $i++) $q->append('test_' . $i);
+$start = microtime(true);
+for($i=LOOP-1; $i>=0; $i--) {
+	assert($q->pop() == 'test_' . $i);
+}
+$ms = microtime(true) - $start;
+printf("%30s %4d ms [%6d ops/s]\n", 'POP', $ms*1000, LOOP / $ms); 
