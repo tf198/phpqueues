@@ -2,7 +2,15 @@
 require_once dirname(__FILE__) . '/../MultiProcess.php';
 require_once "mp_func.php";
 
-class DeferredTest extends PHPUnit_Framework_TestCase {
+class MultiProcessTest extends PHPUnit_Framework_TestCase {
+	
+	function setUp() {
+		MultiProcess::$level = LOG_WARNING;
+	}
+	
+	function tearDown() {
+		MultiProcess::$level = LOG_INFO;
+	}
 	
 	function testUsage() {
 		# do everything as one big test to avoid too many processes being created
@@ -21,7 +29,17 @@ class DeferredTest extends PHPUnit_Framework_TestCase {
 		$l[] = $this->failure;
 		
 		$d = new DeferredList($l);
-		$d->addCallback(array($this, 'check_results'));
+		$d->addCallback(array($this, 'check_usage_results'));
+		
+		$mp->process();
+	}
+	
+	function testBigData() {
+		$mp = new MultiProcessManager(dirname(__FILE__) . '/mp_func.php');
+		
+		$d = $mp->defer('mp_big_hi', 10000);
+		
+		$d->addCallback(array($this, 'check_big_data_result'));
 		
 		$mp->process();
 	}
@@ -35,7 +53,11 @@ class DeferredTest extends PHPUnit_Framework_TestCase {
 		}
 	}
 	
-	function check_results($results) {
+	function check_big_data_result($result) {
+		$this->assertSame(strlen($result), 10000*2);
+	}
+	
+	function check_usage_results($results) {
 		$this->assertSame(array_shift($results), array(true, "Hello Andy"));
 		$this->assertSame(array_shift($results), array(true, "Hello Bob"));
 		$this->assertSame(array_shift($results), array(true, "Exit okay"));

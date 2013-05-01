@@ -5,7 +5,9 @@ define('MULTIPROCESS_PID', getmypid());
 
 class Multiprocess {
 
-	public static $level = LOG_NOTICE;
+	public static $level = LOG_INFO;
+	
+	private static $buffer = array();
 	
 	static function log($message, $level=LOG_INFO) {
 		if( $level > self::$level ) return;
@@ -14,15 +16,39 @@ class Multiprocess {
 	
 	static function send($stream, $data) {
 		$buf = serialize($data);
-		fwrite($stream, pack("V", strlen($buf)));
+		$l = strlen($buf);
+		fwrite($stream, pack("Vx", $l));
 		fwrite($stream, $buf);
 	}
 	
 	static function receive($stream) {
-		$buf = fread($stream, 4);
-		if(strlen($buf) != 4) return false;
-		$m = unpack("V", $buf);
-		return unserialize(fread($stream, $m[1]));
+		// first check if we buffered before
+		if(isset(self::$buffer[$stream])) {
+			list($m, $data) = self::$buffer[$stream];
+		} else {
+			$buf = fread($stream, 5);
+			if(strlen($buf) != 5) return false;
+			$m = unpack("Vlen/x", $buf);
+			$data = "";
+		}
+		
+		$remaining = $m['len'] - strlen($data);
+		if($remaining <= 0) {
+			throw new Exception("Error while reading data");
+		}
+		
+		$data .= fread($stream, $remaining);
+		#Multiprocess::log("Need {$m['len']} bytes, got " . strlen($data), LOG_DEBUG);
+		
+		// if we didn't get all the data then stash it for later
+		if(strlen($data) != $m['len']) {
+			Multiprocess::log("Buffering data for {$m['len']}", LOG_DEBUG);
+			self::$buffer[$stream] = array($m, $data);
+			return false;
+		}
+		
+		self::$buffer[$stream] = null;
+		return unserialize($data);
 	}
 }
 
@@ -72,6 +98,10 @@ class MultiProcessManager {
 		$this->running = true;
 		
 		MultiProcess::log("Starting to process jobs");
+		
+		// allow the reactor to set an exception to be thrown
+		$e = null;
+		
 		while($this->running) {
 			
 			$streams = array();
@@ -96,12 +126,13 @@ class MultiProcessManager {
 					}
 				} else {
 					// worker has died for some reason
-					MultiProcess::log("Worker {$pid} died - RIP!");
+					MultiProcess::log("Worker {$pid} died - RIP!", LOG_WARNING);
 					$this->allowable_errors--;
 					
 					if($this->allowable_errors <= 0) {
 						MultiProcess::log("Too many errors, shutting down", LOG_ERR);
 						$this->running = false;
+						$e = new Exception("Too many errors");
 						continue;
 					}
 					
@@ -129,7 +160,7 @@ class MultiProcessManager {
 				$ready = stream_select($streams, $write=null, $error=null, 30);
 				
 				foreach($streams as $stream) {
-					$result = MultiProcess::receive($stream);
+					$result = MultiProcess::receive($stream);					
 					
 					if($result) {
 						$pid = $stream_hash[$stream];
@@ -157,9 +188,16 @@ class MultiProcessManager {
 		
 		MultiProcess::log("Shutting down");
 		// try and shut down everything cleanly
+		MultiProcess::log("Closing streams");
+		foreach($this->workers as $worker) {
+			$worker->close_streams();
+		}
+
 		foreach($this->workers as $worker) {
 			$worker->close();
 		}
+		
+		if($e) throw $e;
 		
 		MultiProcess::log("Everything cleanly shutdown", LOG_DEBUG);
 	}
@@ -172,7 +210,7 @@ class MultiProcessManager {
  */
 class MultiProcessWorker {
 	
-	private static $descriptors = array(
+	private $descriptors = array(
 		0 => array("pipe", "r"), // child process STDIN
 		1 => array("pipe", "w"), // child process STDOUT
 		2 => STDERR,
@@ -184,7 +222,7 @@ class MultiProcessWorker {
 	
 	function __construct($bootstrap) {
 		$cmd = sprintf("php %s %s", __FILE__, escapeshellarg($bootstrap));
-		$this->p = proc_open($cmd, self::$descriptors, $this->streams);
+		$this->p = proc_open($cmd, $this->descriptors, $this->streams);
 		
 		if(!is_resource($this->p)) throw new Exception("Failed to open process: {$cmd}");
 	}
@@ -201,8 +239,14 @@ class MultiProcessWorker {
 		return proc_get_status($this->p);
 	}
 	
-	function close() {
+	function close_streams() {
 		fclose($this->get_stdin());
+		fclose($this->get_stdout());
+	}
+
+	function close() {
+		$status = $this->get_status();
+		Multiprocess::log("Closing process {$status['pid']}");
 		return proc_close($this->p);
 	}
 }
@@ -212,14 +256,16 @@ if( __FILE__ != realpath($_SERVER['SCRIPT_FILENAME']) ) return;
 
 if( $argc < 2 ) die("Not enough arguments\n");
 
-MultiProcess::log("Loading bootstrap: {$argv[1]}", LOG_DEBUG);
 require_once $argv[1];
+MultiProcess::log("Loaded bootstrap: {$argv[1]}", LOG_DEBUG);
 
 while($params = MultiProcess::receive(STDIN)) {
 	$callback = array_shift($params);
 
 	$result = array('child_pid' => MULTIPROCESS_PID);
 	
+	// need to make sure nothing else writes to STDOUT
+	ob_start();
 	try {
 		MultiProcess::log("Executing: " . print_r($callback, true), LOG_DEBUG);
 		$result['result'] = call_user_func_array($callback, $params);
@@ -229,6 +275,9 @@ while($params = MultiProcess::receive(STDIN)) {
 		$result['exception'] = $e;
 	}
 	MultiProcess::log("Result: {$result['status']}", LOG_DEBUG);
+	
+	$data = ob_get_clean();
+	if($data) fwrite(STDERR, $data);
 		
 	MultiProcess::send(STDOUT, $result);
 }
