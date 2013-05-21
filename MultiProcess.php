@@ -20,6 +20,28 @@ class Multiprocess {
 		
 		fprintf(STDERR, "[%4d] %s\n", MULTIPROCESS_PID, $message);
 	}
+	
+	static function format_callable($callable) {
+		$method = array_shift($callable);
+		return self::format_method($method, $callable);
+	}
+	
+	static function format_method($method, $params) {
+		return sprintf("%s(%s)", print_r($method, true), self::format_params($params));
+	}
+	
+	static function format_params($params) {
+		foreach($params as &$param) {
+			if(is_object($param)) {
+				$param = "<OBJ>";
+			} elseif(is_array($param)) {
+				$param = "<ARRAY>";
+			} else {
+				$param = var_export($param, true);
+			}
+		}
+		return implode(', ', $params);
+	}
 }
 
 class MultiProcessManager {
@@ -99,7 +121,8 @@ class MultiProcessManager {
 						// allocate a job if one is available
 						$job = array_shift($this->queue);
 						if($job) {
-							MultiProcess::log("Assiging work to worker {$wid}", LOG_DEBUG);
+							$printable = MultiProcess::format_callable($job[0]);
+							MultiProcess::log("Assiging {$printable} to worker {$wid}", LOG_DEBUG);
 							$this->allocated[$wid] = $job;
 							//MultiProcess::send($this->workers[$pid]->get_stdin() , $job[0]);
 							$worker->send($job[0]);
@@ -137,7 +160,7 @@ class MultiProcessManager {
 			// check for results
 			
 			if($this->allocated) {
-				$data = $recv_q->bdequeue(5);
+				$data = $recv_q->bdequeue(60);
 					
 				if($data) {
 					$result = unserialize($data);
@@ -276,11 +299,11 @@ while($data = $jobs_q->bdequeue(MP_WORKER_TIMEOUT)) {
 
 	$result = array('child_pid' => MULTIPROCESS_PID, 'worker_id' => $worker_id);
 	
+	MultiProcess::log(sprintf("Worker %d: %s", $worker_id, MultiProcess::format_method($callback, $params)), LOG_DEBUG);
+	
 	// need to make sure nothing else writes to STDOUT
 	ob_start();
 	try {
-		#MultiProcess::log(sprintf("Worker %d: %s(%s)", $worker_id, print_r($callback, true), implode(', ', $params)), LOG_DEBUG);
-		MultiProcess::log(sprintf("Worker %d: %s()", $worker_id, print_r($callback, true)), LOG_DEBUG);
 		$result['result'] = call_user_func_array($callback, $params);
 		$result['status'] = 'ok';
 	} catch(Exception $e) {
