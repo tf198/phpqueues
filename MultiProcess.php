@@ -234,8 +234,13 @@ if( __FILE__ != realpath($_SERVER['SCRIPT_FILENAME']) ) return;
 
 if( $argc < 4 ) die("Not enough arguments\n");
 
-require_once $argv[1];
-#MultiProcess::log("Loaded bootstrap: {$argv[1]}", LOG_DEBUG);
+$bootstrap = $argv[1];
+$basepath = dirname($bootstrap);
+set_include_path(get_include_path() . PATH_SEPARATOR . $basepath);
+chdir($basepath);
+
+require_once $bootstrap;
+#MultiProcess::log("Loaded bootstrap: {$bootstrap}", LOG_DEBUG);
 
 $manager_fifo = $argv[2];
 $worker_id = $argv[3];
@@ -274,7 +279,8 @@ while($data = $jobs_q->bdequeue(MP_WORKER_TIMEOUT)) {
 	// need to make sure nothing else writes to STDOUT
 	ob_start();
 	try {
-		MultiProcess::log(sprintf("Worker %d: %s(%s)", $worker_id, print_r($callback, true), implode(', ', $params)), LOG_DEBUG);
+		#MultiProcess::log(sprintf("Worker %d: %s(%s)", $worker_id, print_r($callback, true), implode(', ', $params)), LOG_DEBUG);
+		MultiProcess::log(sprintf("Worker %d: %s()", $worker_id, print_r($callback, true)), LOG_DEBUG);
 		$result['result'] = call_user_func_array($callback, $params);
 		$result['status'] = 'ok';
 	} catch(Exception $e) {
