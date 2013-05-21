@@ -202,6 +202,17 @@ class ConcurrentFIFO {
 	}
 	
 	/**
+	 * Delete the queue entirely.
+	 * Note any further attempts to modify the queue will result in an exception.
+	 */
+	function delete() {
+		flock($this->fp, LOCK_EX) or die('Failed to get lock');
+		fclose($this->fp);
+		unlink($this->filename);
+		$this->fp = null;
+	}
+	
+	/**
 	 * Return an array of items from the queue. Does not modify the queue in any way.
 	 * 
 	 * @param int $offset skip $offset items at the start

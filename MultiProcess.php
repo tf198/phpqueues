@@ -3,9 +3,9 @@ require_once "Deferred.php";
 require_once "ConcurrentFIFO.php";
 
 define('MULTIPROCESS_PID', getmypid());
-define('WORKER_TIMEOUT', 10);
+define('MP_WORKER_TIMEOUT', 10);
 
-define('DATA_DIR', 'data');
+define('MP_DATA_DIR', 'data');
 
 class Multiprocess {
 
@@ -36,7 +36,7 @@ class MultiProcessManager {
 	
 	private $running;
 	
-	function __construct($bootstrap, $workers=2, $allowable_errors=10, $data_dir=DATA_DIR) {
+	function __construct($bootstrap, $workers=2, $allowable_errors=10, $data_dir=MP_DATA_DIR) {
 		
 		if(!is_dir($data_dir) && !mkdir($data_dir)) {
 			throw new Exception("Failed to create data dir");
@@ -46,8 +46,8 @@ class MultiProcessManager {
 			throw new Exception("{$data_dir} is not writable");
 		}
 		
-		$this->base_file = tempnam($data_dir, 'mp-');
-		Multiprocess::log("Base file: {$this->base_file}");
+		$this->manager_fifo = tempnam($data_dir, 'mp-');
+		Multiprocess::log("Manager FIFO: {$this->manager_fifo}");
 		
 		$this->bootstrap = realpath($bootstrap);
 		if(!$this->bootstrap) throw new Exception("Cannot locate '{$bootstrap}'");
@@ -60,7 +60,7 @@ class MultiProcessManager {
 	}
 	
 	function add_worker() {
-		$worker = new MultiProcessWorker($this->bootstrap, $this->base_file);
+		$worker = new MultiProcessWorker($this->bootstrap, $this->manager_fifo);
 		$this->workers[$worker->id()] = $worker;
 	}
 	
@@ -80,7 +80,7 @@ class MultiProcessManager {
 		
 		MultiProcess::log("Starting to process jobs");
 		
-		$recv_q = new ConcurrentFIFO("{$this->base_file}.results");
+		$recv_q = new ConcurrentFIFO($this->manager_fifo);
 		MultiProcess::log("Waiting for results on {$recv_q}", LOG_DEBUG);
 		
 		// allow the reactor to set an exception to be thrown
@@ -167,6 +167,8 @@ class MultiProcessManager {
 			$worker->close();
 		}
 		
+		$recv_q->delete();
+		
 		if($e) throw $e;
 		
 		MultiProcess::log("Everything cleanly shutdown", LOG_DEBUG);
@@ -186,17 +188,17 @@ class MultiProcessWorker {
 	
 	static $_next_id=0;
 	
-	function __construct($bootstrap, $base_file) {
+	function __construct($bootstrap, $manager_fifo) {
 		$manager = MULTIPROCESS_PID;
 		
 		$this->worker_id = self::$_next_id++;
 		
-		$cmd = sprintf("php %s %s %s %d", __FILE__, escapeshellarg($bootstrap), escapeshellarg($base_file), $this->worker_id);
+		$cmd = sprintf("php %s %s %s %d", __FILE__, escapeshellarg($bootstrap), escapeshellarg($manager_fifo), $this->worker_id);
 		$this->p = proc_open($cmd, array(), $streams);
 		
 		if(!is_resource($this->p)) throw new Exception("Failed to open process: {$cmd}");
 		
-		$this->send_q = new ConcurrentFIFO("{$base_file}-{$this->worker_id}.jobs");
+		$this->send_q = new ConcurrentFIFO("{$manager_fifo}-{$this->worker_id}");
 		MultiProcess::log("Send queue for worker {$this->worker_id}: {$this->send_q}", LOG_DEBUG);
 	}
 	
@@ -218,7 +220,10 @@ class MultiProcessWorker {
 		$status = $this->get_status();
 		Multiprocess::log("Closing process {$status['pid']}");
 		$this->send_q->enqueue("SIG_QUIT");
-		return proc_close($this->p);
+		$result = proc_close($this->p);
+		
+		$this->send_q->delete();
+		return $result;
 	}
 }
 
@@ -232,32 +237,32 @@ if( $argc < 4 ) die("Not enough arguments\n");
 require_once $argv[1];
 #MultiProcess::log("Loaded bootstrap: {$argv[1]}", LOG_DEBUG);
 
-$base_file = $argv[2];
+$manager_fifo = $argv[2];
 $worker_id = $argv[3];
 
-$jobs_q = new ConcurrentFIFO("{$base_file}-{$worker_id}.jobs");
-$results_q = new ConcurrentFIFO("{$base_file}.results");
+$jobs_q = new ConcurrentFIFO("{$manager_fifo}-{$worker_id}");
+$results_q = new ConcurrentFIFO($manager_fifo);
 
 #MultiProcess::log("Receive queue: {$jobs_q}", LOG_DEBUG);
 #MultiProcess::log("Results queue: {$results_q}", LOG_DEBUG);
 
 MultiProcess::log("Worker {$worker_id} ready for jobs");
-while($data = $jobs_q->bdequeue(WORKER_TIMEOUT)) {
+while($data = $jobs_q->bdequeue(MP_WORKER_TIMEOUT)) {
 	
 	#MultiProcess::log("Got data: {$data}");
 	
 	if(!$data) {
-		MultiProcess::log("Worker {$worker_id} received no work in " . WORKER_TIMEOUT . " seconds - quitting...");
+		MultiProcess::log("Worker {$worker_id} received no work in " . MP_WORKER_TIMEOUT . " seconds - quitting...", LOG_WARNING);
 		break;
 	}
 	
 	if(substr($data, 0, 3) == 'SIG') {
-		MultiProcess::log("Worker {$worker_id} received {$data}");
+		MultiProcess::log("Worker {$worker_id} received {$data}", LOG_DEBUG);
 		switch(substr($data, 4)) {
 			case 'QUIT':
 				break 2;
 			default:
-				MultiProcess::log("Unknown signal!");
+				MultiProcess::log("Unknown signal!", LOG_WARNING);
 		}
 	}
 	

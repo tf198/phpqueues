@@ -1,6 +1,8 @@
 <?php
 define("MP_EXIT", 'exit.lock');
 
+MultiProcess::$level = LOG_WARNING;
+
 function mp_one() { return 1; }
 
 function mp_hi($name) {	return "Hello {$name}"; }
