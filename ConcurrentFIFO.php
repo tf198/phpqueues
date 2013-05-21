@@ -40,7 +40,8 @@ class ConcurrentFIFO {
 	 * @throws Exception if the open fails for any reason
 	 */
 	function __construct($filename) {
-		$this->fp = fopen($filename, 'cb+');
+		touch($filename);
+		$this->fp = fopen($filename, 'rb+');
 		$this->filename = $filename;
 		if(!$this->fp) throw new Exception("Failed to open '{$filename}'");
 	}
