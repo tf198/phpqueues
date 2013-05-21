@@ -46,11 +46,11 @@ class MultiProcessManager {
 			throw new Exception("{$data_dir} is not writable");
 		}
 		
-		$this->manager_fifo = tempnam($data_dir, 'mp-');
-		Multiprocess::log("Manager FIFO: {$this->manager_fifo}");
-		
 		$this->bootstrap = realpath($bootstrap);
 		if(!$this->bootstrap) throw new Exception("Cannot locate '{$bootstrap}'");
+		
+		$this->manager_fifo = tempnam($data_dir, 'mp-');
+		Multiprocess::log("Manager FIFO: {$this->manager_fifo}");
 		
 		// prevent eternal loops
 		$this->allowable_errors = $allowable_errors;
