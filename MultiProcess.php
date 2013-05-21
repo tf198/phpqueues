@@ -1,54 +1,24 @@
 <?php
 require_once "Deferred.php";
+require_once "ConcurrentFIFO.php";
 
 define('MULTIPROCESS_PID', getmypid());
+define('WORKER_TIMEOUT', 10);
+
+define('DATA_DIR', 'data');
 
 class Multiprocess {
 
-	public static $level = LOG_INFO;
-	
-	private static $buffer = array();
+	public static $level = LOG_DEBUG;
 	
 	static function log($message, $level=LOG_INFO) {
 		if( $level > self::$level ) return;
+		
+		if(is_array($message)) {
+			$message = print_r($message, true);
+		}
+		
 		fprintf(STDERR, "[%4d] %s\n", MULTIPROCESS_PID, $message);
-	}
-	
-	static function send($stream, $data) {
-		$buf = serialize($data);
-		$l = strlen($buf);
-		fwrite($stream, pack("Vx", $l));
-		fwrite($stream, $buf);
-	}
-	
-	static function receive($stream) {
-		// first check if we buffered before
-		if(isset(self::$buffer[$stream])) {
-			list($m, $data) = self::$buffer[$stream];
-		} else {
-			$buf = fread($stream, 5);
-			if(strlen($buf) != 5) return false;
-			$m = unpack("Vlen/x", $buf);
-			$data = "";
-		}
-		
-		$remaining = $m['len'] - strlen($data);
-		if($remaining <= 0) {
-			throw new Exception("Error while reading data");
-		}
-		
-		$data .= fread($stream, $remaining);
-		#Multiprocess::log("Need {$m['len']} bytes, got " . strlen($data), LOG_DEBUG);
-		
-		// if we didn't get all the data then stash it for later
-		if(strlen($data) != $m['len']) {
-			Multiprocess::log("Buffering data for {$m['len']}", LOG_DEBUG);
-			self::$buffer[$stream] = array($m, $data);
-			return false;
-		}
-		
-		self::$buffer[$stream] = null;
-		return unserialize($data);
 	}
 }
 
@@ -58,15 +28,27 @@ class MultiProcessManager {
 	
 	private $num_workers;
 	
-	private $workers = array();
-	
 	private $queue = array();
 	
 	private $allocated = array();
 	
+	private $workers = array();
+	
 	private $running;
 	
-	function __construct($bootstrap, $workers=2, $allowable_errors=10) {
+	function __construct($bootstrap, $workers=2, $allowable_errors=10, $data_dir=DATA_DIR) {
+		
+		if(!is_dir($data_dir) && !mkdir($data_dir)) {
+			throw new Exception("Failed to create data dir");
+		}
+		
+		if(!is_writeable($data_dir)) {
+			throw new Exception("{$data_dir} is not writable");
+		}
+		
+		$this->base_file = tempnam($data_dir, 'mp-');
+		Multiprocess::log("Base file: {$this->base_file}");
+		
 		$this->bootstrap = realpath($bootstrap);
 		if(!$this->bootstrap) throw new Exception("Cannot locate '{$bootstrap}'");
 		
@@ -78,9 +60,8 @@ class MultiProcessManager {
 	}
 	
 	function add_worker() {
-		$worker = new MultiProcessWorker($this->bootstrap);
-		$status = $worker->get_status();
-		$this->workers[$status['pid']] = $worker;
+		$worker = new MultiProcessWorker($this->bootstrap, $this->base_file);
+		$this->workers[$worker->id()] = $worker;
 	}
 	
 	function defer($callable) {
@@ -99,36 +80,38 @@ class MultiProcessManager {
 		
 		MultiProcess::log("Starting to process jobs");
 		
+		$recv_q = new ConcurrentFIFO("{$this->base_file}.results");
+		MultiProcess::log("Waiting for results on {$recv_q}", LOG_DEBUG);
+		
 		// allow the reactor to set an exception to be thrown
 		$e = null;
 		
 		while($this->running) {
 			
-			$streams = array();
-			$stream_hash = array();
-			
-			foreach(array_keys($this->workers) as $pid) {
-				$status = $this->workers[$pid]->get_status();
-				$stream = null;
+			foreach($this->workers as $wid=>$worker) {
+				$status = $worker->get_status();
 				
+				// Check if worker is still alive
 				if($status['running']) {
-					if(isset($this->allocated[$pid])) {
-						$stream = $this->workers[$pid]->get_stdout();
-					} else {
+					
+					// check if worker is idle
+					if(!isset($this->allocated[$wid])) {
 						// allocate a job if one is available
 						$job = array_shift($this->queue);
 						if($job) {
-							MultiProcess::log("Assiging work to {$pid}", LOG_DEBUG);
-							$this->allocated[$pid] = $job;
-							MultiProcess::send($this->workers[$pid]->get_stdin() , $job[0]);
-							$stream = $this->workers[$pid]->get_stdout();
+							MultiProcess::log("Assiging work to worker {$wid}", LOG_DEBUG);
+							$this->allocated[$wid] = $job;
+							//MultiProcess::send($this->workers[$pid]->get_stdin() , $job[0]);
+							$worker->send($job[0]);
 						}
 					}
+					
 				} else {
 					// worker has died for some reason
-					MultiProcess::log("Worker {$pid} died - RIP!", LOG_WARNING);
+					MultiProcess::log("Worker {$wid} died - RIP!", LOG_WARNING);
 					$this->allowable_errors--;
 					
+					// if we lose too many processes there is probably a coding error
 					if($this->allowable_errors <= 0) {
 						MultiProcess::log("Too many errors, shutting down", LOG_ERR);
 						$this->running = false;
@@ -136,47 +119,39 @@ class MultiProcessManager {
 						continue;
 					}
 					
-					unset($this->workers[$pid]);
+					$worker->close();
+					unset($this->workers[$wid]);
 					// requeue the job if required
-					if(isset($this->allocated[$pid])) {
-						array_unshift($this->queue, $this->allocated[$pid]);
-						unset($this->allocated[$pid]);
+					if(isset($this->allocated[$wid])) {
+						array_unshift($this->queue, $this->allocated[$wid]);
+						unset($this->allocated[$wid]);
 					}
 					// start a new worker to take its place
 					$this->add_worker();
 				}
 				
-				// add the stream to the select() list
-				if($stream !== null) {
-					$streams[] = $stream;
-					$stream_hash[$stream] = $pid;
-				}
 			}
 				
-			MultiProcess::log(count($streams) . " workers busy", LOG_DEBUG);
+			MultiProcess::log(count($this->allocated) . " workers busy", LOG_DEBUG);
 			
-			// do the actual stream reading
-			if($streams) {
-				$ready = stream_select($streams, $write=null, $error=null, 30);
-				
-				foreach($streams as $stream) {
-					$result = MultiProcess::receive($stream);					
+			// check for results
+			
+			if($this->allocated) {
+				$data = $recv_q->bdequeue(5);
 					
-					if($result) {
-						$pid = $stream_hash[$stream];
+				if($data) {
+					$result = unserialize($data);
+					#Multiprocess::log($result);
+					$wid = $result['worker_id'];
 						
-						list($job, $d) = $this->allocated[$pid];
+					list($job, $d) = $this->allocated[$wid];
 						
-						$result['job'] = $job;
-						$result['pid'] = $pid;
-						
-						if($result['status'] == 'ok') {
-							$d->callback($result['result']);
-						} else {
-							$d->errback($result['exception']);
-						}
-						unset($this->allocated[$pid]);
+					if($result['status'] == 'ok') {
+						$d->callback($result['result']);
+					} else {
+						$d->errback($result['exception']);
 					}
+					unset($this->allocated[$wid]);
 				}
 			} else {
 				if(!$this->queue) {
@@ -188,11 +163,6 @@ class MultiProcessManager {
 		
 		MultiProcess::log("Shutting down");
 		// try and shut down everything cleanly
-		MultiProcess::log("Closing streams");
-		foreach($this->workers as $worker) {
-			$worker->close_streams();
-		}
-
 		foreach($this->workers as $worker) {
 			$worker->close();
 		}
@@ -210,64 +180,96 @@ class MultiProcessManager {
  */
 class MultiProcessWorker {
 	
-	private $descriptors = array(
-		0 => array("pipe", "r"), // child process STDIN
-		1 => array("pipe", "w"), // child process STDOUT
-		2 => STDERR,
-	);
-	
-	private $streams;
-	
 	private $p;
 	
-	function __construct($bootstrap) {
-		$cmd = sprintf("php %s %s", __FILE__, escapeshellarg($bootstrap));
-		$this->p = proc_open($cmd, $this->descriptors, $this->streams);
+	private $send_q, $worker_id;
+	
+	static $_next_id=0;
+	
+	function __construct($bootstrap, $base_file) {
+		$manager = MULTIPROCESS_PID;
+		
+		$this->worker_id = self::$_next_id++;
+		
+		$cmd = sprintf("php %s %s %s %d", __FILE__, escapeshellarg($bootstrap), escapeshellarg($base_file), $this->worker_id);
+		$this->p = proc_open($cmd, array(), $streams);
 		
 		if(!is_resource($this->p)) throw new Exception("Failed to open process: {$cmd}");
-	}
-	
-	function get_stdin() {
-		return $this->streams[0];
-	}
-	
-	function get_stdout() {
-		return $this->streams[1];
+		
+		$this->send_q = new ConcurrentFIFO("{$base_file}-{$this->worker_id}.jobs");
+		MultiProcess::log("Send queue for worker {$this->worker_id}: {$this->send_q}", LOG_DEBUG);
 	}
 	
 	function get_status() {
 		return proc_get_status($this->p);
 	}
 	
-	function close_streams() {
-		fclose($this->get_stdin());
-		fclose($this->get_stdout());
+	function id() {
+		return $this->worker_id;
+	}
+	
+	function send($data) {
+		$data = serialize($data);
+		#MultiProcess::log("Sending data: {$data}");
+		$this->send_q->enqueue($data);
 	}
 
 	function close() {
 		$status = $this->get_status();
 		Multiprocess::log("Closing process {$status['pid']}");
+		$this->send_q->enqueue("SIG_QUIT");
 		return proc_close($this->p);
 	}
 }
 
+#### END OF CLASSES ###
+
 // use this file as the dispatcher
 if( __FILE__ != realpath($_SERVER['SCRIPT_FILENAME']) ) return;
 
-if( $argc < 2 ) die("Not enough arguments\n");
+if( $argc < 4 ) die("Not enough arguments\n");
 
 require_once $argv[1];
-MultiProcess::log("Loaded bootstrap: {$argv[1]}", LOG_DEBUG);
+#MultiProcess::log("Loaded bootstrap: {$argv[1]}", LOG_DEBUG);
 
-while($params = MultiProcess::receive(STDIN)) {
+$base_file = $argv[2];
+$worker_id = $argv[3];
+
+$jobs_q = new ConcurrentFIFO("{$base_file}-{$worker_id}.jobs");
+$results_q = new ConcurrentFIFO("{$base_file}.results");
+
+#MultiProcess::log("Receive queue: {$jobs_q}", LOG_DEBUG);
+#MultiProcess::log("Results queue: {$results_q}", LOG_DEBUG);
+
+MultiProcess::log("Worker {$worker_id} ready for jobs");
+while($data = $jobs_q->bdequeue(WORKER_TIMEOUT)) {
+	
+	#MultiProcess::log("Got data: {$data}");
+	
+	if(!$data) {
+		MultiProcess::log("Worker {$worker_id} received no work in " . WORKER_TIMEOUT . " seconds - quitting...");
+		break;
+	}
+	
+	if(substr($data, 0, 3) == 'SIG') {
+		MultiProcess::log("Worker {$worker_id} received {$data}");
+		switch(substr($data, 4)) {
+			case 'QUIT':
+				break 2;
+			default:
+				MultiProcess::log("Unknown signal!");
+		}
+	}
+	
+	$params = unserialize($data);
 	$callback = array_shift($params);
 
-	$result = array('child_pid' => MULTIPROCESS_PID);
+	$result = array('child_pid' => MULTIPROCESS_PID, 'worker_id' => $worker_id);
 	
 	// need to make sure nothing else writes to STDOUT
 	ob_start();
 	try {
-		MultiProcess::log("Executing: " . print_r($callback, true), LOG_DEBUG);
+		MultiProcess::log(sprintf("Worker %d: %s(%s)", $worker_id, print_r($callback, true), implode(', ', $params)), LOG_DEBUG);
 		$result['result'] = call_user_func_array($callback, $params);
 		$result['status'] = 'ok';
 	} catch(Exception $e) {
@@ -279,8 +281,8 @@ while($params = MultiProcess::receive(STDIN)) {
 	$data = ob_get_clean();
 	if($data) fwrite(STDERR, $data);
 		
-	MultiProcess::send(STDOUT, $result);
+	$results_q->enqueue(serialize($result));
 }
 
-MultiProcess::log("Finished", LOG_DEBUG);
+MultiProcess::log("Worker {$worker_id} Finished", LOG_DEBUG);
 

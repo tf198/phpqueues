@@ -15,7 +15,7 @@ class ConcurrentFIFO {
 	 * Our file pointer
 	 * @var resource
 	 */
-	private $fp;
+	private $fp, $filename;
 
 	const INDEX_FORMAT = 'V4';
 	const INDEX_UNPACK = 'Vstart/Vend/Vlen/Vchecksum';
@@ -41,6 +41,7 @@ class ConcurrentFIFO {
 	 */
 	function __construct($filename) {
 		$this->fp = fopen($filename, 'cb+');
+		$this->filename = $filename;
 		if(!$this->fp) throw new Exception("Failed to open '{$filename}'");
 	}
 
@@ -288,6 +289,10 @@ class ConcurrentFIFO {
 			usleep($this->poll_frequency);
 			if($timeout && (microtime(true) > $start + $timeout)) return null;
 		}
+	}
+	
+	function __toString() {
+		return "<FIFO: {$this->filename}>";
 	}
 
 }
