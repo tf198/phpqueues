@@ -104,6 +104,16 @@ class DeferredTest extends PHPUnit_Framework_TestCase {
 		$this->assertSame($d->result, null);
 	}
 	
+	function testLateErrback() {
+		$d = new Deferred(new Exception('Test exception'));
+		$d->addErrback(array($this, 'eb_handled'));
+		
+		$this->assertSequence('eb_handled[Test exception]');
+		$this->assertSame($d->result, null);
+		
+		unset($d);
+	}
+	
 	function testBadCallback() {
 		$d = new Deferred();
 		try {

@@ -120,6 +120,7 @@ class DeferredList extends Deferred {
 			$this->callback($results); 
 		}
 		
+		// TODO: Check this behaviour - should we just swallow exceptions?
 		// pass through the result
 		return $result;
 	}

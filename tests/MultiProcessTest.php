@@ -31,6 +31,9 @@ class MultiProcessTest extends PHPUnit_Framework_TestCase {
 		$d = new DeferredList($l);
 		$d->addCallback(array($this, 'check_usage_results'));
 		
+		# Swallow the exception
+		$this->failure->addErrback('pi');
+		
 		$mp->process();
 	}
 	
@@ -66,7 +69,6 @@ class MultiProcessTest extends PHPUnit_Framework_TestCase {
 		list($ok, $e) = array_shift($results);
 		$this->assertSame(false, $ok);
 		$this->assertSame($e->getMessage(), 'Test Exception');
-		$this->failure->addErrback('pi');
 		
 		$this->assertEmpty($results);
 	}
