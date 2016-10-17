@@ -1,6 +1,6 @@
 <?php
 
-define('LOOP', 10000);
+define('LOOP', 100000);
 define('TEST_FIFO', 'test.fifo');
 
 include "ConcurrentFIFO.php";

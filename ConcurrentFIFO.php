@@ -153,12 +153,13 @@ class ConcurrentFIFO {
 			$index = array('start' => self::INDEX_SIZE, 'end' => self::INDEX_SIZE, 'len' => 0);
 		}
 
-		$this->_write_index($index['start'], $index['end'] + $c + self::LENGTH_SIZE, $index['len'] + 1);
 		fseek($this->fp, $index['end']);
 
 		// write length followed by data
 		fwrite($this->fp, pack(self::LENGTH_FORMAT, $c), self::LENGTH_SIZE);
 		fwrite($this->fp, $data, $c);
+
+		$this->_write_index($index['start'], $index['end'] + $c + self::LENGTH_SIZE, $index['len'] + 1);
 
 		//echo "Wrote {$data} at {$index['end']}\n";
 		// release lock
